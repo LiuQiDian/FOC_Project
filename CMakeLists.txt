@@ -68,8 +68,13 @@ list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
     User_BSP
-    $<TARGET_NAME_IF_EXISTS:User_APP>
-    $<TARGET_NAME_IF_EXISTS:User_LIB>
+    User_APP
+    User_LIB
 
     # Add user defined libraries
+)
+
+# newlib-nano 默认不支持 %f 格式化，此选项强制链接浮点版 printf (增加 ~12KB flash)
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+    -u _printf_float
 )
