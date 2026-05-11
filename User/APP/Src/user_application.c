@@ -2,7 +2,7 @@
  * @Author: Liu_xiyang 3230643253@qq.com
  * @Date: 2026-05-08 19:25:47
  * @LastEditors: Liu_xiyang 3230643253@qq.com
- * @LastEditTime: 2026-05-09 17:06:07
+ * @LastEditTime: 2026-05-11 23:40:17
  * @FilePath: \FOC_Project\User\APP\Src\user_application.c
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -36,12 +36,11 @@
  void user_app(void)
  {
     VOFA_Init(VOFA_UART);
-    MT6701_DMA_Init();
+    foc_init();
 
     while (1)
     {
-        float angle = angleRead();
-        VOFA_Print("Angle: %.2f\n", angle);
+        motor_control();
         osDelay(100);
     }
  }

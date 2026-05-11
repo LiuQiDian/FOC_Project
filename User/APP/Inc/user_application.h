@@ -6,6 +6,7 @@
 #include "pwm.h"
 #include "mt6701.h"
 #include "cmsis_os.h"
+#include "foc.h"
 
 
 #define VOFA_UART &huart1

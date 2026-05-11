@@ -30,6 +30,8 @@ typedef struct {
     uint8_t            started;       // 输出使能标志
 } PWM_Handle;
 
+extern PWM_Handle pwmd;
+
 /* ===================== API ===================== */
 
 /**

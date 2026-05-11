@@ -14,6 +14,14 @@
  */
 
 #include "pwm.h"
+#include "tim.h"
+
+
+PWM_Handle pwmd = {
+    .htim = &htim1,    // 绑定 TIM1，CubeMX 生成的定时器句柄
+    .period = 4200,
+    .max_pulse = 0,
+};
 
 /* ===================== 内部辅助 ===================== */
 

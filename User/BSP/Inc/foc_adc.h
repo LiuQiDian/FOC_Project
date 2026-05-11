@@ -47,15 +47,6 @@ extern adc_current_t adc_data;
 void ADC_Init(ADC_HandleTypeDef* hadc, adc_current_t* adc_data);
 
 /**
- * @brief  更新三相电流零点偏移
- * @details 连续采样 2000 次取平均值作为零点偏移量，
- *          用于后续采样时减去偏移以获得真实电流值。
- * @param  hadc      ADC 句柄指针
- * @param  adc_data  偏移值写入的目标结构体
- */
-static void UpdateCurrentOffsets(ADC_HandleTypeDef* hadc, adc_current_t* adc_data);
-
-/**
  * @brief  读取 ADC 注入通道并计算实际电流与母线电压
  * @details 从四个注入通道读取原始 ADC 值，减去零点偏移后乘以标定系数，
  *          得到 A/B/C 三相实际电流及母线电压。

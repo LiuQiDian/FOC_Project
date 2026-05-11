@@ -2,16 +2,86 @@
  * @Author: Liu_xiyang 3230643253@qq.com
  * @Date: 2026-05-09 17:07:51
  * @LastEditors: Liu_xiyang 3230643253@qq.com
- * @LastEditTime: 2026-05-10 22:31:56
+ * @LastEditTime: 2026-05-11 23:53:57
  * @FilePath: \FOC_Project\User\LIB\Src\foc.c
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
+
 #include "foc.h"
+#include "mt6701.h"
+#include "pwm.h"
+#include "stm32f405xx.h"
+#include <stdint.h>
 
 
-//   关键设计原则：一个 struct foc_motor 代表一个电机轴，所有状态都在其中，不依赖全局变量。
+static svpwm_sector_t sector; // 当前扇区，FOC 主体根据电角度计算后更新
+static float zero_electrical_angle = 0.0f; // 电角度零点偏移，FOC 主体通过校准函数更新
 
-//   5. API 生命周期
+const foc_sensor_ops_t mt6701_foc_ops;
+const foc_current_ops_t adc_foc_current_ops;
+const foc_svpwm_ops_t svpwm_foc_ops;
+
+static float update_motor_angle(void);
+static foc_err_t calibrate_electronical_angle();
+static foc_err_t set_voltage_phase(float Uq, float Ud, float electrical_angle);
+
+foc_motor_t motor = {
+    .s_ops = &mt6701_foc_ops,
+    .c_ops = &adc_foc_current_ops,
+    .svpwm = &svpwm_foc_ops,
+
+    .pole_pairs = 11,
+    .state = FOC_STATE_OPEN_LOOP,
+
+    .electrical_angle = 0.0f,
+    .angle_prev = 0.0f,
+    .velocity = 0.0f,
+    .ia = 0.0f,
+    .ib = 0.0f,
+    .ic = 0.0f,
+    .Ua = 0.0f,
+    .Ub = 0.0f,
+    .Uc = 0.0f,
+    .vd_ref = 0.0f,
+    .vq_ref = 0.0f,
+    .v_alpha = 0.0f,
+    .v_beta = 0.0f,
+    .id_ref = 0.0f,
+    .iq_ref = 0.0f
+};
+
+foc_err_t foc_init(void)
+{
+    // 1. 初始化传感器接口
+    if (mt6701_foc_ops.init() != FOC_OK) {
+        return FOC_ERR;
+    }
+
+    // 2. 初始化电流采样接口
+    if (adc_foc_current_ops.init() != FOC_OK) {
+        return FOC_ERR;
+    }
+
+    // 3. 初始化 SVPWM 输出接口
+    if (motor.svpwm->init() != FOC_OK) {
+        return FOC_ERR;
+    }
+
+    // DWT_Init(168); // 初始化 DWT 计时器，用于高精度控制环计时
+
+    calibrate_electronical_angle(); // 校准电角度零点
+
+    return FOC_OK;
+}
+
+void motor_control(void)
+{
+    motor.iq_ref = 1.0f; // 设定一个固定的 q 轴电流参考值，代表目标转矩
+    motor.id_ref = 0.0f; // d 轴电流参考值保持为零以最大化转矩输出
+    motor.electrical_angle = update_motor_angle(); // 更新电角度
+
+    set_voltage_phase(motor.iq_ref, motor.id_ref, motor.electrical_angle); // 设置输出电压
+}
 
 //   /* 分配/初始化/解构 — Linux 风格两级构造 */
 //   struct foc_motor *foc_motor_alloc(void);
@@ -19,7 +89,6 @@
 //   void     foc_motor_exit(struct foc_motor *m);    // 释放内部资源
 //   void     foc_motor_free(struct foc_motor *m);     // 释放结构体本身
 
-//   /* 运行时 */
 //   foc_err_t foc_motor_start(struct foc_motor *m);
 //   foc_err_t foc_motor_stop(struct foc_motor *m);
 
@@ -27,38 +96,187 @@
 //   foc_err_t foc_current_loop(struct foc_motor *m);  // 电流环 ISR 本体
 //   foc_err_t foc_speed_loop(struct foc_motor *m);    // 速度环 (通常在外层任务中)
 
-//   /* 参数调节 */
-//   void foc_id_ref_set(struct foc_motor *m, float id_ref);
-//   void foc_iq_ref_set(struct foc_motor *m, float iq_ref);
+uint32_t constrain(uint32_t val, uint32_t min_val, uint32_t max_val)
+{
+    if (val < min_val) return min_val;
+    if (val > max_val) return max_val;
+    return val;
+}
 
-//   foc_motor_alloc / foc_motor_free 对应 Linux 内核里 kzalloc / kfree 的惯用法；foc_motor_init / foc_motor_exit 对应 open /
-//   release。两级构造函数可以分离内存分配和设备初始化。
+float normalize_angle(float angle)
+{
+    float a = fmod(angle, 2 * PI);
+    return a >= 0 ? a : (a + 2 * PI);
+}
 
+float get_angle(float angle)
+{
+    return normalize_angle(motor.pole_pairs * angle + zero_electrical_angle);
+}
 
-//   7. 变换模块：纯函数
+static float update_motor_angle(void)
+{
+    float angle = motor.s_ops->read(&motor.electrical_angle);
+    return get_angle(angle);
+}
 
-//   Clark/Park/SVPWM 没有内部状态，最适合写成无副作用的纯函数：
+static foc_err_t calibrate_electronical_angle(void)
+{
+    set_voltage_phase(3.0f, 0.0f, 0.0f);
 
-//   /* foc_transform.h */
+    vTaskDelay(pdMS_TO_TICKS(1000));
 
-//   /* Clark: 三相电流 → αβ */
-//   void foc_clarke(float ia, float ib, float ic,
-//                   float *i_alpha, float *i_beta);
+    float angleSum = 0;
+    int samples = 100;
+    for (int i=0; i<samples; i++)
+    {
+        angleSum += GetAngle(angleRead());
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    float mechanicalAngle_locked = angleSum / samples;
+    zero_electrical_angle = normalize_angle(motor.pole_pairs * mechanicalAngle_locked);
 
-//   /* Park: αβ + 电角度 → dq */
-//   void foc_park(float i_alpha, float i_beta, float theta,
-//                 float *i_d, float *i_q);
+    set_voltage_phase(0.0f, 0.0f, 0.0f);
 
-//   /* 反 Park: dq + 电角度 → αβ */
-//   void foc_inv_park(float v_d, float v_q, float theta,
-//                     float *v_alpha, float *v_beta);
+    return FOC_OK;
+}
 
-//   /* SVPWM: αβ 参考电压 → 三相比较值 */
-//   foc_err_t foc_svpwm_calc(float v_alpha, float v_beta, float vdc,
-//                            uint32_t period, struct foc_pwm_duty *out);
+static void inverse_park_transform(float U_d, float U_q, float theta, float *U_alpha, float *U_beta)
+{
+    float cos_theta = arm_cos_f32(theta);
+    float sin_theta = arm_sin_f32(theta);
+    *U_alpha = U_d * cos_theta - U_q * sin_theta;
+    *U_beta = U_d * sin_theta + U_q * cos_theta;
+}
 
+static void inverse_clarke_transform(float U_alpha, float U_beta, float *Ua, float *Ub, float *Uc)
+{
+    *Ua = U_alpha;
+    *Ub = (-U_alpha + SQRT3 * U_beta) * (1.0f / 2.0f);
+    *Uc = (-U_alpha - SQRT3 * U_beta) * (1.0f / 2.0f);
+}
 
+static foc_err_t set_voltage_phase(float Uq, float Ud, float electrical_angle)
+{
+    inverse_park_transform(Ud, Uq, electrical_angle, &motor.v_alpha, &motor.v_beta);
+    return motor.svpwm->set(motor.v_alpha, motor.v_beta, motor.Ua, motor.Ub, motor.Uc);
+}
 
+static foc_err_t svpwm_init(void)
+{
+    if(PWM_Init(&pwmd, pwmd.htim) != PWM_OK) {
+        return FOC_ERR;
+    }
+    return FOC_OK;
+}
+
+static foc_err_t svpwm_set(float U_alpha, float U_beta,float Ua, float Ub, float Uc)
+{
+    float ta = 0.0f;
+    float tb = 0.0f;
+    float tc = 0.0f;
+    float k = (TS * SQRT3) * INVBATVEL;
+    inverse_clarke_transform(U_alpha, U_beta, &Ua, &Ub, &Uc);
+
+    int a = (Ua > 0) ? 1 : 0;
+    int b = (Ub > 0) ? 1 : 0;
+    int c = (Uc > 0) ? 1 : 0;
+    sector = (c << 2) | (b << 1) | a;
+
+    switch (sector)
+    {
+    case SVPWM_SECTOR_1:
+    {
+        float t4 = k * Ub;
+        float t6 = k * Ua;
+        float t0 = (TS - t4 - t6) * 0.5f;
+
+        ta       = t4 + t6 + t0;
+        tb       = t6 + t0;
+        tc       = t0;
+    }
+    break;
+
+    case SVPWM_SECTOR_2:
+    {
+        float t6 = -k * Uc;
+        float t2 = -k * Ub;
+        float t0 = (TS - t2 - t6) * 0.5f;
+
+        ta       = t6 + t0;      // a相占空比时间计算
+        tb       = t2 + t6 + t0; // b相占空比时间计算
+        tc       = t0;           // c相占空比时间为t0
+    }
+    break;
+
+    case SVPWM_SECTOR_3:
+    {
+        float t2 = k * Ua;
+        float t3 = k * Uc;
+        float t0 = (TS - t2 - t3) * 0.5f;
+
+        ta       = t0;           // a相占空比时间为t0
+        tb       = t2 + t3 + t0; // b相占空比时间计算
+        tc       = t3 + t0;      // c相占空比时间计算
+    }
+    break;
+
+    case SVPWM_SECTOR_4:
+    {
+        float t1 = -k * Ua;
+        float t3 = -k * Ub;
+        float t0 = (TS - t1 - t3) * 0.5f;
+
+        ta       = t0;           // a相占空比时间为t0
+        tb       = t3 + t0;      // b相占空比时间计算
+        tc       = t1 + t3 + t0; // c相占空比时间计算
+    }
+    break;
+
+    case SVPWM_SECTOR_5:
+    {
+        float t1 = k * Uc;
+        float t5 = k * Ub;
+        float t0 = (TS - t1 - t5) * 0.5f;
+
+        ta       = t5 + t0;      // a相占空比时间计算
+        tb       = t0;           // b相占空比时间为t0
+        tc       = t1 + t5 + t0; // c相占空比时间计算
+    }
+    break;
+
+    case SVPWM_SECTOR_6:
+    {
+        float t4 = -k * Uc;
+        float t5 = -k * Ua;
+        float t0 = (TS - t4 - t5) * 0.5f;
+
+        ta       = t4 + t5 + t0; // a相占空比时间计算
+        tb       = t0;           // b相占空比时间为t0
+        tc       = t5 + t0;      // c相占空比时间计算
+    }
+    break;
+
+    default:
+        break;
+    }
+
+    ta=(uint32_t)(ta * (float)pwmd.period);
+    tb=(uint32_t)(tb * (float)pwmd.period);
+    tc=(uint32_t)(tc * (float)pwmd.period);
+
+    ta = constrain(ta, 0, pwmd.period);
+    tb = constrain(tb, 0, pwmd.period);
+    tc = constrain(tc, 0, pwmd.period);
+
+    PWM_SetThreePhase(&pwmd, ta, tb, tc);
+    return FOC_OK;
+}
+
+const foc_svpwm_ops_t svpwm_foc_ops = {
+    .init = svpwm_init,
+    .set = svpwm_set,
+};
 
 static foc_err_t mt6701_init(void)
 {
