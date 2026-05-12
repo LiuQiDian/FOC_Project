@@ -2,7 +2,7 @@
  * @Author: Liu_xiyang 3230643253@qq.com
  * @Date: 2026-05-10 21:22:54
  * @LastEditors: Liu_xiyang 3230643253@qq.com
- * @LastEditTime: 2026-05-11 23:37:03
+ * @LastEditTime: 2026-05-12 19:51:04
  * @FilePath: \FOC_Project\User\BSP\Src\foc_adc.c
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -15,8 +15,6 @@
 
 /** @brief 全局 ADC 采样数据 */
 adc_current_t adc_data;
-
-
 
 /**
  * @brief  更新三相电流零点偏移
@@ -76,3 +74,4 @@ void UpdateCurrent(ADC_HandleTypeDef* hadc, adc_current_t* adc_data)
   adc_data->Ic = (float)(adcValueIc - adc_data->currentCOffset) * FAC_CURRENT_ADC;
   adc_data->Vbus = (float)adcValueVbus * FAC_VOLTAGE_ADC; // 根据 ADC 分辨率和参考电压计算 VBUS
 }
+

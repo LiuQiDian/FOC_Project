@@ -7,6 +7,7 @@
 #include "foc_adc.h"
 #include "pwm.h"
 #include "dwt.h"
+#include "vofa.h"
 
 
 
@@ -78,8 +79,11 @@ typedef struct foc_motor {
     uint8_t state;                      // STOP / OPEN_LOOP / CLOSED_LOOP / FAULT
 }foc_motor_t;
 
-
+extern const foc_sensor_ops_t mt6701_foc_ops;
+extern const foc_current_ops_t adc_foc_current_ops;
+extern const foc_svpwm_ops_t svpwm_foc_ops;
 extern foc_motor_t motor;
+
 
 extern foc_err_t foc_init(void);
 extern void motor_control(void);

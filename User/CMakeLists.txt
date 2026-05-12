@@ -18,6 +18,7 @@ set(User_BSP_Src
 # User APP sources
 set(User_APP_Src
     ${CMAKE_CURRENT_SOURCE_DIR}/APP/Src/user_application.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/APP/Src/callback.c
 )
 
 # User LIB sources

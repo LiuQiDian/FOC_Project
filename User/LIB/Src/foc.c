@@ -2,7 +2,7 @@
  * @Author: Liu_xiyang 3230643253@qq.com
  * @Date: 2026-05-09 17:07:51
  * @LastEditors: Liu_xiyang 3230643253@qq.com
- * @LastEditTime: 2026-05-11 23:53:57
+ * @LastEditTime: 2026-05-13 00:11:45
  * @FilePath: \FOC_Project\User\LIB\Src\foc.c
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -11,17 +11,16 @@
 #include "mt6701.h"
 #include "pwm.h"
 #include "stm32f405xx.h"
+#include "vofa.h"
+#include <math.h>
 #include <stdint.h>
 
 
 static svpwm_sector_t sector; // 当前扇区，FOC 主体根据电角度计算后更新
 static float zero_electrical_angle = 0.0f; // 电角度零点偏移，FOC 主体通过校准函数更新
 
-const foc_sensor_ops_t mt6701_foc_ops;
-const foc_current_ops_t adc_foc_current_ops;
-const foc_svpwm_ops_t svpwm_foc_ops;
-
-static float update_motor_angle(void);
+static void update_motor_angle(void);
+static void update_motor_current(void);
 static foc_err_t calibrate_electronical_angle();
 static foc_err_t set_voltage_phase(float Uq, float Ud, float electrical_angle);
 
@@ -56,45 +55,31 @@ foc_err_t foc_init(void)
     if (mt6701_foc_ops.init() != FOC_OK) {
         return FOC_ERR;
     }
-
+    vTaskDelay(pdMS_TO_TICKS(100)); // 等待传感器稳定
     // 2. 初始化电流采样接口
     if (adc_foc_current_ops.init() != FOC_OK) {
         return FOC_ERR;
     }
-
+    vTaskDelay(pdMS_TO_TICKS(100)); // 等待 ADC 稳定
     // 3. 初始化 SVPWM 输出接口
     if (motor.svpwm->init() != FOC_OK) {
         return FOC_ERR;
     }
-
+    vTaskDelay(pdMS_TO_TICKS(100)); // 等待 SVPWM 稳定
     // DWT_Init(168); // 初始化 DWT 计时器，用于高精度控制环计时
-
-    calibrate_electronical_angle(); // 校准电角度零点
-
+    motor.electrical_angle = 3.14f;
+    
+    motor.iq_ref = 1.0f; // 设定一个固定的 q 轴电流参考值，代表目标转矩
+    motor.id_ref = 0.0f; // d 轴电流参考值保持为零以最大化转矩输出
     return FOC_OK;
 }
 
 void motor_control(void)
 {
-    motor.iq_ref = 1.0f; // 设定一个固定的 q 轴电流参考值，代表目标转矩
-    motor.id_ref = 0.0f; // d 轴电流参考值保持为零以最大化转矩输出
-    motor.electrical_angle = update_motor_angle(); // 更新电角度
-
+    update_motor_angle(); // 更新电角度
+    update_motor_current(); // 更新三相电流
     set_voltage_phase(motor.iq_ref, motor.id_ref, motor.electrical_angle); // 设置输出电压
 }
-
-//   /* 分配/初始化/解构 — Linux 风格两级构造 */
-//   struct foc_motor *foc_motor_alloc(void);
-//   foc_err_t foc_motor_init(struct foc_motor *m, const struct foc_config *cfg);
-//   void     foc_motor_exit(struct foc_motor *m);    // 释放内部资源
-//   void     foc_motor_free(struct foc_motor *m);     // 释放结构体本身
-
-//   foc_err_t foc_motor_start(struct foc_motor *m);
-//   foc_err_t foc_motor_stop(struct foc_motor *m);
-
-//   /* 控制环 — 放在定时器中断或 FreeRTOS 高优先级任务中调用 */
-//   foc_err_t foc_current_loop(struct foc_motor *m);  // 电流环 ISR 本体
-//   foc_err_t foc_speed_loop(struct foc_motor *m);    // 速度环 (通常在外层任务中)
 
 uint32_t constrain(uint32_t val, uint32_t min_val, uint32_t max_val)
 {
@@ -114,10 +99,15 @@ float get_angle(float angle)
     return normalize_angle(motor.pole_pairs * angle + zero_electrical_angle);
 }
 
-static float update_motor_angle(void)
+static void update_motor_angle(void)
 {
-    float angle = motor.s_ops->read(&motor.electrical_angle);
-    return get_angle(angle);
+    motor.s_ops->read(&motor.electrical_angle);
+    motor.electrical_angle = get_angle(motor.electrical_angle);
+}
+
+static void update_motor_current(void)
+{
+    motor.c_ops->sample(&motor.ia, &motor.ib, &motor.ic);
 }
 
 static foc_err_t calibrate_electronical_angle(void)
@@ -143,10 +133,8 @@ static foc_err_t calibrate_electronical_angle(void)
 
 static void inverse_park_transform(float U_d, float U_q, float theta, float *U_alpha, float *U_beta)
 {
-    float cos_theta = arm_cos_f32(theta);
-    float sin_theta = arm_sin_f32(theta);
-    *U_alpha = U_d * cos_theta - U_q * sin_theta;
-    *U_beta = U_d * sin_theta + U_q * cos_theta;
+    *U_alpha = U_d * arm_cos_f32(theta) - U_q * arm_sin_f32(theta);
+    *U_beta = U_d * arm_sin_f32(theta) + U_q * arm_cos_f32(theta);
 }
 
 static void inverse_clarke_transform(float U_alpha, float U_beta, float *Ua, float *Ub, float *Uc)
@@ -159,6 +147,7 @@ static void inverse_clarke_transform(float U_alpha, float U_beta, float *Ua, flo
 static foc_err_t set_voltage_phase(float Uq, float Ud, float electrical_angle)
 {
     inverse_park_transform(Ud, Uq, electrical_angle, &motor.v_alpha, &motor.v_beta);
+    inverse_clarke_transform(motor.v_alpha, motor.v_beta, &motor.Ua, &motor.Ub, &motor.Uc);
     return motor.svpwm->set(motor.v_alpha, motor.v_beta, motor.Ua, motor.Ub, motor.Uc);
 }
 
@@ -167,6 +156,7 @@ static foc_err_t svpwm_init(void)
     if(PWM_Init(&pwmd, pwmd.htim) != PWM_OK) {
         return FOC_ERR;
     }
+    PWM_Start(&pwmd);
     return FOC_OK;
 }
 
@@ -176,7 +166,7 @@ static foc_err_t svpwm_set(float U_alpha, float U_beta,float Ua, float Ub, float
     float tb = 0.0f;
     float tc = 0.0f;
     float k = (TS * SQRT3) * INVBATVEL;
-    inverse_clarke_transform(U_alpha, U_beta, &Ua, &Ub, &Uc);
+    // VOFA_Print("%f,%f,%f\n", Ua, Ub, Uc);
 
     int a = (Ua > 0) ? 1 : 0;
     int b = (Ub > 0) ? 1 : 0;
@@ -260,15 +250,14 @@ static foc_err_t svpwm_set(float U_alpha, float U_beta,float Ua, float Ub, float
     default:
         break;
     }
-
+    
     ta=(uint32_t)(ta * (float)pwmd.period);
     tb=(uint32_t)(tb * (float)pwmd.period);
     tc=(uint32_t)(tc * (float)pwmd.period);
-
     ta = constrain(ta, 0, pwmd.period);
     tb = constrain(tb, 0, pwmd.period);
     tc = constrain(tc, 0, pwmd.period);
-
+    
     PWM_SetThreePhase(&pwmd, ta, tb, tc);
     return FOC_OK;
 }
@@ -301,7 +290,7 @@ const foc_sensor_ops_t mt6701_foc_ops = {
 static foc_err_t adc_init(void)
 {
     ADC_Init(&hadc1, &adc_data);
-    // 电角度校准
+    calibrate_electronical_angle(); // 校准电角度零点
     __HAL_ADC_ENABLE_IT(&hadc1, ADC_IT_JEOC);
     HAL_ADCEx_InjectedStart_IT(&hadc1);
     return FOC_OK;

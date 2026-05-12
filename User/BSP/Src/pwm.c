@@ -15,12 +15,13 @@
 
 #include "pwm.h"
 #include "tim.h"
+#include "vofa.h"
 
 
 PWM_Handle pwmd = {
     .htim = &htim1,    // 绑定 TIM1，CubeMX 生成的定时器句柄
     .period = 4200,
-    .max_pulse = 0,
+    .max_pulse = 3990,
 };
 
 /* ===================== 内部辅助 ===================== */
@@ -188,7 +189,6 @@ PWM_Status PWM_SetThreePhase(PWM_Handle *pwm, uint32_t cmp1, uint32_t cmp2, uint
     tim->CCR1 = clamp_pulse(cmp1, max);
     tim->CCR2 = clamp_pulse(cmp2, max);
     tim->CCR3 = clamp_pulse(cmp3, max);
-
     return PWM_OK;
 }
 

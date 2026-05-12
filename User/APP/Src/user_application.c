@@ -2,7 +2,7 @@
  * @Author: Liu_xiyang 3230643253@qq.com
  * @Date: 2026-05-08 19:25:47
  * @LastEditors: Liu_xiyang 3230643253@qq.com
- * @LastEditTime: 2026-05-11 23:40:17
+ * @LastEditTime: 2026-05-12 23:56:37
  * @FilePath: \FOC_Project\User\APP\Src\user_application.c
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -28,8 +28,9 @@
   *  ******************************************************************************
   */
  
- #include "user_application.h"
-
+#include "user_application.h"
+#include "callback.h"
+#include "vofa.h"
 
 /* ===================== 用户主任务 ===================== */
 
@@ -37,10 +38,19 @@
  {
     VOFA_Init(VOFA_UART);
     foc_init();
-
+    int cnt = 0;
     while (1)
     {
-        motor_control();
-        osDelay(100);
+      cnt++;
+      /* 在任务上下文中执行 FOC 控制 */
+      motor_control();
+      if (cnt % 100 == 0) {// 每100次循环打印一次数据
+        // VOFA_Print("%f,%f,%f,%f,%f\n", motor.electrical_angle, motor.ia, motor.ib, motor.ic, motor.iq_ref);
+        // VOFA_Print("%f,%f,%f,%f,%f\n", motor.electrical_angle, motor.ia, motor.ib, motor.ic, motor.iq_ref);
+      }
+      if (cnt >= 10000) {
+        cnt = 0;
+      }
+      // vTaskDelay(pdMS_TO_TICKS(1)); // 每次循环延时 1ms，控制任务频率约为 1kHz
     }
  }
